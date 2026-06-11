@@ -1,4 +1,4 @@
-name: Build and Publish Repo
+name: Build Arch Repo
 
 on:
   push:
@@ -15,48 +15,69 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Install build tools
+      - name: Install dependencies
         run: |
           pacman -Sy --noconfirm base-devel git
 
-      - name: Build packages
+      - name: Prepare builder user
         run: |
           useradd -m builder
           chown -R builder:builder .
 
-          su builder -c "
-            for pkg in pkgs/*; do
-              cd \$pkg
-              makepkg -s --noconfirm
-              mv *.pkg.tar.zst ../../
-              cd -
-            done
-          "
-
-      - name: Prepare repo folder
+      - name: Build packages
         run: |
+          set -e
+
           mkdir -p repo/x86_64
-          mv *.pkg.tar.zst repo/x86_64/ || true
 
-      - name: Clone gh-pages
+          su builder -c '
+            for pkgdir in pkgs/*; do
+              echo "=== Building $pkgdir ==="
+              cd "$pkgdir"
+
+              # Build package
+              makepkg -s --noconfirm --clean
+
+              # Move result to repo folder
+              mv *.pkg.tar.zst ../../repo/x86_64/ || true
+
+              cd - >/dev/null
+            done
+          '
+
+      - name: Checkout gh-pages branch
         run: |
-          git clone --branch gh-pages \
+          git clone \
+            --branch gh-pages \
             https://x-access-token:${{ github.token }}@github.com/${{ github.repository }} \
             pages
 
       - name: Update repo database
         run: |
-          cp -f repo/x86_64/*.pkg.tar.zst pages/x86_64/ || true
+          set -e
+
+          mkdir -p pages/x86_64
+
+          # Copy packages
+          cp repo/x86_64/*.pkg.tar.zst pages/x86_64/ 2>/dev/null || true
+
           cd pages/x86_64
 
-          repo-add myrepo.db.tar.gz *.pkg.tar.zst
+          # Remove old repo db (important to avoid stale data)
+          rm -f myrepo.db.tar.gz myrepo.files.tar.gz || true
 
-      - name: Commit and push
+          # Create new repo database
+          repo-add myrepo.db.tar.gz *.pkg.tar.zst || true
+
+      - name: Commit and push changes
         run: |
           cd pages
+
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
           git add .
-          git commit -m "update repo" || exit 0
+
+          git commit -m "update repo" || echo "No changes to commit"
+
           git push
