@@ -1,4 +1,4 @@
-name: Build Arch Repo (latest version only)
+name: Build Arch Repo (latest-only stable)
 
 on:
   push:
@@ -12,19 +12,31 @@ jobs:
       image: archlinux:latest
 
     steps:
-      - name: Checkout
+      # ---------------------------
+      # Checkout
+      # ---------------------------
+      - name: Checkout repo
         uses: actions/checkout@v4
 
+      # ---------------------------
+      # Cache pacman
+      # ---------------------------
       - name: Cache pacman
         uses: actions/cache@v4
         with:
           path: /var/cache/pacman/pkg
           key: pacman-${{ runner.os }}
 
-      - name: Install tools
+      # ---------------------------
+      # Install tools
+      # ---------------------------
+      - name: Install base tools
         run: |
-          pacman -Sy --noconfirm base-devel git sudo
+          pacman -Sy --noconfirm base-devel git sudo pacman
 
+      # ---------------------------
+      # Setup builder user
+      # ---------------------------
       - name: Setup builder
         run: |
           useradd -m builder
@@ -32,7 +44,7 @@ jobs:
           chown -R builder:builder .
 
       # ---------------------------
-      # BUILD ALL PACKAGES
+      # Build packages
       # ---------------------------
       - name: Build packages
         run: |
@@ -45,16 +57,23 @@ jobs:
             pkgdir="$1"
             [ -d "$pkgdir" ] || return
 
+            echo "========================"
             echo "Building $pkgdir"
+            echo "========================"
+
             pushd "$pkgdir" >/dev/null
 
-            sudo -u builder makepkg -s --noconfirm --clean --skippgpcheck || exit 1
+            sudo -u builder makepkg -s --noconfirm --clean --skippgpcheck || {
+              echo "FAILED: $pkgdir"
+              exit 1
+            }
 
             for pkgfile in *.pkg.tar.zst; do
-              mv "$pkgfile" ../../repo/x86_64/
+              [ -f "$pkgfile" ] && mv "$pkgfile" ../../repo/x86_64/
             done
 
             popd >/dev/null
+
             BUILT_PKGS="$BUILT_PKGS $(basename "$pkgdir")"
           }
 
@@ -64,8 +83,11 @@ jobs:
 
           echo "$BUILT_PKGS" > built_pkgs.txt
 
+          echo "Built packages:"
+          cat built_pkgs.txt
+
       # ---------------------------
-      # GH-PAGES
+      # Checkout gh-pages
       # ---------------------------
       - name: Checkout gh-pages
         run: |
@@ -73,21 +95,25 @@ jobs:
             https://x-access-token:${{ github.token }}@github.com/${{ github.repository }} pages
 
       # ---------------------------
-      # KEEP ONLY LATEST VERSION PER PACKAGE
+      # Sync + prune + latest version only
       # ---------------------------
-      - name: Prune old versions + sync repo
+      - name: Sync repo (latest-only prune)
         run: |
           set -euo pipefail
 
           mkdir -p pages/x86_64
+
+          # copy new packages
+          shopt -s nullglob
           cp repo/x86_64/*.pkg.tar.zst pages/x86_64/ || true
+
           cd pages/x86_64
 
           echo "=== RAW PACKAGES ==="
           ls -1
 
           # ---------------------------
-          # Step 1: map latest package per name
+          # latest-version selection
           # ---------------------------
           declare -A latest_file
           declare -A latest_ver
@@ -95,27 +121,21 @@ jobs:
           for file in *.pkg.tar.zst; do
             [ -e "$file" ] || continue
 
-            # extract name-version-release-arch parts
-            # name-version-release-arch.pkg.tar.zst
+            # extract name/version safely
             base="${file%.pkg.tar.zst}"
-
-            # split arch part
             namever="${base%-*-*}"
             name="${namever%-*}"
             ver="${namever##*-}"
 
-            # compare versions using pacman's vercmp
-            if [[ -z "${latest_ver[$name]}" ]]; then
-              latest_ver[$name]=$ver
-              latest_file[$name]=$file
+            if [[ -z "${latest_ver[$name]:-}" ]]; then
+              latest_ver["$name"]="$ver"
+              latest_file["$name"]="$file"
             else
               if vercmp "$ver" "${latest_ver[$name]}" > 0; then
-                # new version is newer
                 rm -f "${latest_file[$name]}"
-                latest_ver[$name]=$ver
-                latest_file[$name]=$file
+                latest_ver["$name"]="$ver"
+                latest_file["$name"]="$file"
               else
-                # old version → delete
                 rm -f "$file"
               fi
             fi
@@ -125,7 +145,7 @@ jobs:
           ls -1
 
           # ---------------------------
-          # Step 2: remove packages whose PKGBUILD no longer exists
+          # remove orphan packages
           # ---------------------------
           for file in *.pkg.tar.zst; do
             pkgname=$(echo "$file" | sed -E 's/-[0-9].*//')
@@ -137,22 +157,23 @@ jobs:
           done
 
           # ---------------------------
-          # Step 3: rebuild repo DB
+          # rebuild repo DB
           # ---------------------------
           rm -f *.db.tar.gz *.files.tar.gz || true
           repo-add myrepo.db.tar.gz *.pkg.tar.zst
 
       # ---------------------------
-      # PUSH
+      # Push changes
       # ---------------------------
-      - name: Push
+      - name: Push gh-pages
         run: |
           set -euo pipefail
 
           cd pages
+
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
           git add .
-          git commit -m "update repo (latest only)" || echo "no changes"
+          git commit -m "update repo (latest-only)" || echo "no changes"
           git push
