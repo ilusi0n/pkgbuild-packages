@@ -1,0 +1,14 @@
+pkgname=profile-sync-daemon-brave-origin-beta
+pkgver=2026.04.19
+pkgrel=1
+pkgdesc="Brave origin beta browser support for profile-sync-daemon"
+arch=('any')
+license=('none')
+depends=('profile-sync-daemon')
+source=("brave-origin-beta")
+md5sums=('SKIP')
+
+package() {
+	install -Dm644 brave-origin-beta "${pkgdir}/usr/share/psd/browsers/brave-origin-beta"
+}
+

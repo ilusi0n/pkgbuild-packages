@@ -1,0 +1,14 @@
+pkgname=profile-sync-daemon-helium
+pkgver=2026.04.19
+pkgrel=1
+pkgdesc="Helium browser support for profile-sync-daemon"
+arch=('any')
+license=('none')
+depends=('profile-sync-daemon')
+source=("helium")
+md5sums=('SKIP')
+
+package() {
+	install -Dm644 helium "${pkgdir}/usr/share/psd/browsers/helium"
+}
+
