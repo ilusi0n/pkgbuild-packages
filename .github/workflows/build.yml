@@ -1,4 +1,4 @@
-name: Build packages
+name: Build pkgbuild packages
 
 on:
   push:
@@ -12,13 +12,16 @@ jobs:
       image: archlinux:latest
 
     steps:
+      # ---------------------------
+      # Checkout
+      # ---------------------------
       - name: Checkout repo
         uses: actions/checkout@v4
 
       # ---------------------------
-      # 2. Cache pacman packages
+      # Cache pacman packages
       # ---------------------------
-      - name: Cache pacman packages
+      - name: Cache pacman
         uses: actions/cache@v4
         with:
           path: /var/cache/pacman/pkg
@@ -27,14 +30,14 @@ jobs:
       # ---------------------------
       # Install dependencies
       # ---------------------------
-      - name: Install build tools
+      - name: Install base tools
         run: |
           pacman -Sy --noconfirm base-devel git sudo
 
       # ---------------------------
-      # 3. Strict build environment
+      # Setup builder user
       # ---------------------------
-      - name: Setup builder user
+      - name: Setup builder
         run: |
           set -euo pipefail
 
@@ -44,49 +47,54 @@ jobs:
           chown -R builder:builder .
 
       # ---------------------------
-      # 3. Validate PKGBUILDs early
+      # Validate PKGBUILDs early
       # ---------------------------
       - name: Validate PKGBUILDs
         run: |
           set -euo pipefail
 
-          for d in pkgs/*; do
-            echo "Checking $d"
-            test -f "$d/PKGBUILD"
-            sudo -u builder bash -c "cd $d && makepkg --printsrcinfo > /dev/null"
+          for pkg in pkgs/*; do
+            echo "Checking $pkg"
+
+            test -f "$pkg/PKGBUILD"
+
+            sudo -u builder bash -c "cd $pkg && makepkg --printsrcinfo > /dev/null"
           done
 
       # ---------------------------
-      # 10. Parallel build (xargs)
+      # Build packages (SEQUENTIAL - SAFE)
       # ---------------------------
-      - name: Build packages (parallel)
+      - name: Build packages
         run: |
           set -euo pipefail
 
           mkdir -p repo/x86_64
 
           build_pkg() {
-            pkgdir=$1
+            pkgdir="$1"
+
+            echo "========================"
             echo "Building $pkgdir"
+            echo "========================"
 
             cd "$pkgdir"
 
+            # IMPORTANT: skip PGP issues (your current setup)
             sudo -u builder makepkg -s --noconfirm --clean --skippgpcheck
 
             pkgfile=$(ls *.pkg.tar.zst 2>/dev/null || true)
 
             if [ -z "$pkgfile" ]; then
-              echo "ERROR: build failed in $pkgdir"
+              echo "ERROR: No package produced in $pkgdir"
               exit 1
             fi
 
             mv "$pkgfile" ../../repo/x86_64/
           }
 
-          export -f build_pkg
-
-          find pkgs -mindepth 1 -maxdepth 1 -type d \
-            | xargs -n 1 -P 4 bash -c 'build_pkg "$@"' _
+          for pkg in pkgs/*; do
+            build_pkg "$pkg"
+          done
 
       # ---------------------------
       # Checkout gh-pages
@@ -99,27 +107,30 @@ jobs:
             pages
 
       # ---------------------------
-      # 4. Clean repo rebuild (IMPORTANT)
+      # Rebuild repo database (clean)
       # ---------------------------
-      - name: Rebuild repo database
+      - name: Build repo database
         run: |
           set -euo pipefail
 
           mkdir -p pages/x86_64
 
-          # copy packages
-          cp repo/x86_64/*.pkg.tar.zst pages/x86_64/ 2>/dev/null || true
+          # copy packages safely
+          find repo/x86_64 -name "*.pkg.tar.zst" -exec cp {} pages/x86_64/ \;
 
           cd pages/x86_64
 
-          # clean old database
+          echo "Repo contents:"
+          ls -lah
+
+          # remove old DB files
           rm -f *.db.tar.gz *.files.tar.gz || true
 
-          # rebuild from scratch
+          # rebuild database
           repo-add myrepo.db.tar.gz *.pkg.tar.zst
 
       # ---------------------------
-      # Commit to gh-pages
+      # Commit and push
       # ---------------------------
       - name: Push gh-pages
         run: |
