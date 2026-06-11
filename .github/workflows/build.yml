@@ -28,6 +28,15 @@ jobs:
           key: pacman-${{ runner.os }}
 
       # ---------------------------
+      # Cache built package hashes
+      # ---------------------------
+      - name: Cache package hashes
+        uses: actions/cache@v5
+        with:
+          path: pkg-cache
+          key: pkg-hashes-${{ runner.os }}
+
+      # ---------------------------
       # Install tools
       # ---------------------------
       - name: Install base tools
@@ -57,13 +66,25 @@ jobs:
             pkgdir="$1"
             [ -d "$pkgdir" ] || return
 
+            pkgname=$(basename "$pkgdir")
+
+            # compute hash of the entire package directory
+            pkg_hash=$(find "$pkgdir" -type f | sort | xargs sha256sum | sha256sum | cut -d' ' -f1)
+            cache_file="pkg-cache/${pkgname}.hash"
+
+            # skip if hash matches cached
+            if [ -f "$cache_file" ] && [ "$(cat "$cache_file")" = "$pkg_hash" ]; then
+              echo "SKIP (unchanged): $pkgname"
+              BUILT_PKGS="$BUILT_PKGS $pkgname"
+              return
+            fi
+
             echo "========================"
-            echo "Building $pkgdir"
+            echo "Building $pkgname"
             echo "========================"
 
             pushd "$pkgdir" >/dev/null
 
-            # default optimization
             export CFLAGS="-O2"
             export CXXFLAGS="-O2"
             export RUSTFLAGS="-C opt-level=3"
@@ -80,7 +101,11 @@ jobs:
 
             popd >/dev/null
 
-            BUILT_PKGS="$BUILT_PKGS $(basename "$pkgdir")"
+            # update hash cache
+            mkdir -p pkg-cache
+            echo "$pkg_hash" > "$cache_file"
+
+            BUILT_PKGS="$BUILT_PKGS $pkgname"
           }
 
           for pkg in pkgs/*; do
@@ -127,7 +152,6 @@ jobs:
           for file in *.pkg.tar.zst; do
             [ -e "$file" ] || continue
 
-            # extract name/version safely
             base="${file%.pkg.tar.zst}"
             namever="${base%-*-*}"
             name="${namever%-*}"
