@@ -13,15 +13,15 @@ jobs:
 
     steps:
       # ---------------------------
-      # Checkout
+      # Checkout repo
       # ---------------------------
-      - name: Checkout repo
+      - name: Checkout
         uses: actions/checkout@v4
 
       # ---------------------------
-      # Cache pacman packages
+      # Cache pacman
       # ---------------------------
-      - name: Cache pacman
+      - name: Cache pacman packages
         uses: actions/cache@v4
         with:
           path: /var/cache/pacman/pkg
@@ -37,7 +37,7 @@ jobs:
       # ---------------------------
       # Setup builder user
       # ---------------------------
-      - name: Setup builder
+      - name: Setup builder user
         run: |
           set -euo pipefail
 
@@ -47,7 +47,7 @@ jobs:
           chown -R builder:builder .
 
       # ---------------------------
-      # Validate PKGBUILDs early
+      # Validate PKGBUILDs
       # ---------------------------
       - name: Validate PKGBUILDs
         run: |
@@ -56,13 +56,16 @@ jobs:
           for pkg in pkgs/*; do
             echo "Checking $pkg"
 
-            test -f "$pkg/PKGBUILD"
+            if [ ! -f "$pkg/PKGBUILD" ]; then
+              echo "ERROR: Missing PKGBUILD in $pkg"
+              exit 1
+            fi
 
             sudo -u builder bash -c "cd $pkg && makepkg --printsrcinfo > /dev/null"
           done
 
       # ---------------------------
-      # Build packages (SEQUENTIAL - SAFE)
+      # Build packages (SAFE SEQUENTIAL)
       # ---------------------------
       - name: Build packages
         run: |
@@ -79,7 +82,7 @@ jobs:
 
             cd "$pkgdir"
 
-            # IMPORTANT: skip PGP issues (your current setup)
+            # skip PGP checks (fix for r8168 issue)
             sudo -u builder makepkg -s --noconfirm --clean --skippgpcheck
 
             pkgfile=$(ls *.pkg.tar.zst 2>/dev/null || true)
@@ -93,7 +96,11 @@ jobs:
           }
 
           for pkg in pkgs/*; do
-            build_pkg "$pkg"
+            if [ -d "$pkg" ]; then
+              build_pkg "$pkg"
+            else
+              echo "Skipping invalid path: $pkg"
+            fi
           done
 
       # ---------------------------
@@ -107,7 +114,7 @@ jobs:
             pages
 
       # ---------------------------
-      # Rebuild repo database (clean)
+      # Build repo database cleanly
       # ---------------------------
       - name: Build repo database
         run: |
@@ -115,7 +122,7 @@ jobs:
 
           mkdir -p pages/x86_64
 
-          # copy packages safely
+          echo "Copying packages..."
           find repo/x86_64 -name "*.pkg.tar.zst" -exec cp {} pages/x86_64/ \;
 
           cd pages/x86_64
@@ -123,14 +130,14 @@ jobs:
           echo "Repo contents:"
           ls -lah
 
-          # remove old DB files
+          # remove old database files
           rm -f *.db.tar.gz *.files.tar.gz || true
 
-          # rebuild database
+          # rebuild repo database
           repo-add myrepo.db.tar.gz *.pkg.tar.zst
 
       # ---------------------------
-      # Commit and push
+      # Push to gh-pages
       # ---------------------------
       - name: Push gh-pages
         run: |
