@@ -1,8 +1,8 @@
-name: Build Arch Repo
+name: Build packages
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
 
 jobs:
   build:
@@ -15,58 +15,82 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Install dependencies
+      # ---------------------------
+      # 2. Cache pacman packages
+      # ---------------------------
+      - name: Cache pacman packages
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/pacman/pkg
+          key: pacman-cache
+
+      # ---------------------------
+      # Install dependencies
+      # ---------------------------
+      - name: Install build tools
         run: |
           pacman -Sy --noconfirm base-devel git sudo
 
-      - name: Create builder user
+      # ---------------------------
+      # 3. Strict build environment
+      # ---------------------------
+      - name: Setup builder user
         run: |
+          set -euo pipefail
+
           useradd -m builder
           echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+
           chown -R builder:builder .
 
-      - name: Debug (IMPORTANT)
+      # ---------------------------
+      # 3. Validate PKGBUILDs early
+      # ---------------------------
+      - name: Validate PKGBUILDs
         run: |
-          echo "Repo structure:"
-          ls -R
+          set -euo pipefail
 
-      - name: Build packages
+          for d in pkgs/*; do
+            echo "Checking $d"
+            test -f "$d/PKGBUILD"
+            sudo -u builder bash -c "cd $d && makepkg --printsrcinfo > /dev/null"
+          done
+
+      # ---------------------------
+      # 10. Parallel build (xargs)
+      # ---------------------------
+      - name: Build packages (parallel)
         run: |
-          set -e
+          set -euo pipefail
 
           mkdir -p repo/x86_64
 
-          for pkgdir in pkgs/*; do
-            echo "========================"
+          build_pkg() {
+            pkgdir=$1
             echo "Building $pkgdir"
-            echo "========================"
 
             cd "$pkgdir"
 
-            # Ensure PKGBUILD exists
-            if [ ! -f PKGBUILD ]; then
-              echo "ERROR: No PKGBUILD in $pkgdir"
-              exit 1
-            fi
+            sudo -u builder makepkg -s --noconfirm --clean
 
-            # Build package as non-root user
-            sudo -u builder makepkg -s --noconfirm --clean --skippgpcheck
-
-            # Find produced package
             pkgfile=$(ls *.pkg.tar.zst 2>/dev/null || true)
 
             if [ -z "$pkgfile" ]; then
-              echo "ERROR: No package produced in $pkgdir"
+              echo "ERROR: build failed in $pkgdir"
               exit 1
             fi
 
-            echo "Built package: $pkgfile"
-
             mv "$pkgfile" ../../repo/x86_64/
+          }
 
-            cd - >/dev/null
-          done
+          export -f build_pkg
 
+          find pkgs -mindepth 1 -maxdepth 1 -type d \
+            | xargs -n 1 -P 4 bash -c 'build_pkg "$@"' _
+
+      # ---------------------------
+      # Checkout gh-pages
+      # ---------------------------
       - name: Checkout gh-pages
         run: |
           git clone \
@@ -74,24 +98,33 @@ jobs:
             https://x-access-token:${{ github.token }}@github.com/${{ github.repository }} \
             pages
 
-      - name: Update repo database
+      # ---------------------------
+      # 4. Clean repo rebuild (IMPORTANT)
+      # ---------------------------
+      - name: Rebuild repo database
         run: |
-          set -e
+          set -euo pipefail
 
           mkdir -p pages/x86_64
 
+          # copy packages
           cp repo/x86_64/*.pkg.tar.zst pages/x86_64/ 2>/dev/null || true
 
           cd pages/x86_64
 
-          # Clean old db files
-          rm -f myrepo.db.tar.gz myrepo.files.tar.gz || true
+          # clean old database
+          rm -f *.db.tar.gz *.files.tar.gz || true
 
-          # Create repo database
+          # rebuild from scratch
           repo-add myrepo.db.tar.gz *.pkg.tar.zst
 
-      - name: Commit and push gh-pages
+      # ---------------------------
+      # Commit to gh-pages
+      # ---------------------------
+      - name: Push gh-pages
         run: |
+          set -euo pipefail
+
           cd pages
 
           git config user.name "github-actions"
@@ -99,6 +132,6 @@ jobs:
 
           git add .
 
-          git commit -m "update repo" || echo "No changes"
+          git commit -m "update repo" || echo "no changes"
 
           git push
