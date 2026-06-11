@@ -1,4 +1,5 @@
-name: Build pkgbuild packages
+name: Build Arch Repo (latest version only)
+
 on:
   push:
     branches: ["main"]
@@ -11,119 +12,147 @@ jobs:
       image: archlinux:latest
 
     steps:
-      # ---------------------------
-      # Checkout repository
-      # ---------------------------
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ---------------------------
-      # Install base tools
-      # ---------------------------
-      - name: Install base-devel and git
+      - name: Cache pacman
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/pacman/pkg
+          key: pacman-${{ runner.os }}
+
+      - name: Install tools
         run: |
           pacman -Sy --noconfirm base-devel git sudo
 
-      # ---------------------------
-      # Setup builder user
-      # ---------------------------
-      - name: Setup builder user
+      - name: Setup builder
         run: |
           useradd -m builder
           echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
           chown -R builder:builder .
 
       # ---------------------------
-      # Show PKGBUILDs for debug
+      # BUILD ALL PACKAGES
       # ---------------------------
-      - name: List PKGBUILDs
-        run: ls -R pkgs
-
-      # ---------------------------
-      # Build packages
-      # ---------------------------
-      - name: Build packages sequentially
+      - name: Build packages
         run: |
           set -euo pipefail
+
           mkdir -p repo/x86_64
+          BUILT_PKGS=""
 
           build_pkg() {
             pkgdir="$1"
+            [ -d "$pkgdir" ] || return
 
-            if [ ! -d "$pkgdir" ]; then
-              echo "Skipping invalid path: $pkgdir"
-              return
-            fi
-
-            echo "========================"
             echo "Building $pkgdir"
-            echo "========================"
-
             pushd "$pkgdir" >/dev/null
 
-            # Build package, skip PGP check
-            sudo -u builder makepkg -s --noconfirm --clean --skippgpcheck || {
-              echo "FAILED BUILD: $pkgdir"
-              exit 1
-            }
+            sudo -u builder makepkg -s --noconfirm --clean --skippgpcheck || exit 1
 
-            # Move all produced package files
             for pkgfile in *.pkg.tar.zst; do
-              if [ -f "$pkgfile" ]; then
-                echo "Moving $pkgfile"
-                mv "$pkgfile" ../../repo/x86_64/
-              fi
+              mv "$pkgfile" ../../repo/x86_64/
             done
 
             popd >/dev/null
+            BUILT_PKGS="$BUILT_PKGS $(basename "$pkgdir")"
           }
 
-          # Build each package
           for pkg in pkgs/*; do
             build_pkg "$pkg"
           done
 
-          echo "=== FINAL REPO CONTENT ==="
-          ls -lah repo/x86_64
+          echo "$BUILT_PKGS" > built_pkgs.txt
 
       # ---------------------------
-      # Checkout gh-pages branch
+      # GH-PAGES
       # ---------------------------
       - name: Checkout gh-pages
         run: |
-          git clone \
-            --branch gh-pages \
-            https://x-access-token:${{ github.token }}@github.com/${{ github.repository }} \
-            pages
+          git clone --branch gh-pages \
+            https://x-access-token:${{ github.token }}@github.com/${{ github.repository }} pages
 
       # ---------------------------
-      # Copy packages and rebuild repo DB
+      # KEEP ONLY LATEST VERSION PER PACKAGE
       # ---------------------------
-      - name: Update repo database
+      - name: Prune old versions + sync repo
         run: |
           set -euo pipefail
+
           mkdir -p pages/x86_64
-
-          echo "Copying packages..."
-          find repo/x86_64 -name "*.pkg.tar.zst" -exec cp {} pages/x86_64/ \;
-
+          cp repo/x86_64/*.pkg.tar.zst pages/x86_64/ || true
           cd pages/x86_64
 
-          # remove old DB files
-          rm -f *.db.tar.gz *.files.tar.gz || true
+          echo "=== RAW PACKAGES ==="
+          ls -1
 
-          echo "Creating repo database..."
+          # ---------------------------
+          # Step 1: map latest package per name
+          # ---------------------------
+          declare -A latest_file
+          declare -A latest_ver
+
+          for file in *.pkg.tar.zst; do
+            [ -e "$file" ] || continue
+
+            # extract name-version-release-arch parts
+            # name-version-release-arch.pkg.tar.zst
+            base="${file%.pkg.tar.zst}"
+
+            # split arch part
+            namever="${base%-*-*}"
+            name="${namever%-*}"
+            ver="${namever##*-}"
+
+            # compare versions using pacman's vercmp
+            if [[ -z "${latest_ver[$name]}" ]]; then
+              latest_ver[$name]=$ver
+              latest_file[$name]=$file
+            else
+              if vercmp "$ver" "${latest_ver[$name]}" > 0; then
+                # new version is newer
+                rm -f "${latest_file[$name]}"
+                latest_ver[$name]=$ver
+                latest_file[$name]=$file
+              else
+                # old version → delete
+                rm -f "$file"
+              fi
+            fi
+          done
+
+          echo "=== CLEANED PACKAGES ==="
+          ls -1
+
+          # ---------------------------
+          # Step 2: remove packages whose PKGBUILD no longer exists
+          # ---------------------------
+          for file in *.pkg.tar.zst; do
+            pkgname=$(echo "$file" | sed -E 's/-[0-9].*//')
+
+            if ! grep -qw "$pkgname" ../../built_pkgs.txt; then
+              echo "Removing orphan: $file"
+              rm -f "$file"
+            fi
+          done
+
+          # ---------------------------
+          # Step 3: rebuild repo DB
+          # ---------------------------
+          rm -f *.db.tar.gz *.files.tar.gz || true
           repo-add myrepo.db.tar.gz *.pkg.tar.zst
 
       # ---------------------------
-      # Push updated repo
+      # PUSH
       # ---------------------------
-      - name: Push gh-pages
+      - name: Push
         run: |
           set -euo pipefail
+
           cd pages
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
+
           git add .
-          git commit -m "update repo" || echo "no changes"
+          git commit -m "update repo (latest only)" || echo "no changes"
           git push
