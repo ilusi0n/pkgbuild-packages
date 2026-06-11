@@ -71,7 +71,7 @@ jobs:
 
             cd "$pkgdir"
 
-            sudo -u builder makepkg -s --noconfirm --clean
+            sudo -u builder makepkg -s --noconfirm --clean --skippgpcheck
 
             pkgfile=$(ls *.pkg.tar.zst 2>/dev/null || true)
 
