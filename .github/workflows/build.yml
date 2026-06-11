@@ -17,12 +17,18 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pacman -Sy --noconfirm base-devel git
+          pacman -Sy --noconfirm base-devel git sudo
 
-      - name: Prepare builder user
+      - name: Create builder user
         run: |
           useradd -m builder
+          echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
           chown -R builder:builder .
+
+      - name: Debug (IMPORTANT)
+        run: |
+          echo "Repo structure:"
+          ls -R
 
       - name: Build packages
         run: |
@@ -30,22 +36,38 @@ jobs:
 
           mkdir -p repo/x86_64
 
-          su builder -c '
-            for pkgdir in pkgs/*; do
-              echo "=== Building $pkgdir ==="
-              cd "$pkgdir"
+          for pkgdir in pkgs/*; do
+            echo "========================"
+            echo "Building $pkgdir"
+            echo "========================"
 
-              # Build package
-              makepkg -s --noconfirm --clean
+            cd "$pkgdir"
 
-              # Move result to repo folder
-              mv *.pkg.tar.zst ../../repo/x86_64/ || true
+            # Ensure PKGBUILD exists
+            if [ ! -f PKGBUILD ]; then
+              echo "ERROR: No PKGBUILD in $pkgdir"
+              exit 1
+            fi
 
-              cd - >/dev/null
-            done
-          '
+            # Build package as non-root user
+            sudo -u builder makepkg -s --noconfirm --clean
 
-      - name: Checkout gh-pages branch
+            # Find produced package
+            pkgfile=$(ls *.pkg.tar.zst 2>/dev/null || true)
+
+            if [ -z "$pkgfile" ]; then
+              echo "ERROR: No package produced in $pkgdir"
+              exit 1
+            fi
+
+            echo "Built package: $pkgfile"
+
+            mv "$pkgfile" ../../repo/x86_64/
+
+            cd - >/dev/null
+          done
+
+      - name: Checkout gh-pages
         run: |
           git clone \
             --branch gh-pages \
@@ -58,18 +80,17 @@ jobs:
 
           mkdir -p pages/x86_64
 
-          # Copy packages
           cp repo/x86_64/*.pkg.tar.zst pages/x86_64/ 2>/dev/null || true
 
           cd pages/x86_64
 
-          # Remove old repo db (important to avoid stale data)
+          # Clean old db files
           rm -f myrepo.db.tar.gz myrepo.files.tar.gz || true
 
-          # Create new repo database
-          repo-add myrepo.db.tar.gz *.pkg.tar.zst || true
+          # Create repo database
+          repo-add myrepo.db.tar.gz *.pkg.tar.zst
 
-      - name: Commit and push changes
+      - name: Commit and push gh-pages
         run: |
           cd pages
 
@@ -78,6 +99,6 @@ jobs:
 
           git add .
 
-          git commit -m "update repo" || echo "No changes to commit"
+          git commit -m "update repo" || echo "No changes"
 
           git push
