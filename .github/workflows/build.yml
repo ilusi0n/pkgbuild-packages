@@ -63,6 +63,12 @@ jobs:
 
             pushd "$pkgdir" >/dev/null
 
+            # default optimization
+            export CFLAGS="-O2"
+            export CXXFLAGS="-O2"
+            export RUSTFLAGS="-C opt-level=3"
+            export MAKEFLAGS="-j$(nproc)"
+
             sudo -u builder makepkg -s --noconfirm --clean --skippgpcheck || {
               echo "FAILED: $pkgdir"
               exit 1
