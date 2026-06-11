@@ -1,0 +1,62 @@
+name: Build and Publish Repo
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    container:
+      image: archlinux:latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          pacman -Sy --noconfirm base-devel git
+
+      - name: Build packages
+        run: |
+          useradd -m builder
+          chown -R builder:builder .
+
+          su builder -c "
+            for pkg in pkgs/*; do
+              cd \$pkg
+              makepkg -s --noconfirm
+              mv *.pkg.tar.zst ../../
+              cd -
+            done
+          "
+
+      - name: Prepare repo folder
+        run: |
+          mkdir -p repo/x86_64
+          mv *.pkg.tar.zst repo/x86_64/ || true
+
+      - name: Clone gh-pages
+        run: |
+          git clone --branch gh-pages \
+            https://x-access-token:${{ github.token }}@github.com/${{ github.repository }} \
+            pages
+
+      - name: Update repo database
+        run: |
+          cp -f repo/x86_64/*.pkg.tar.zst pages/x86_64/ || true
+          cd pages/x86_64
+
+          repo-add myrepo.db.tar.gz *.pkg.tar.zst
+
+      - name: Commit and push
+        run: |
+          cd pages
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+          git add .
+          git commit -m "update repo" || exit 0
+          git push
