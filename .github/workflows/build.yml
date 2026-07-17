@@ -3,6 +3,13 @@ name: Build Arch Repo (latest-only stable)
 "on":
   push:
     branches: ["main"]
+    paths:
+      - "pkgs/**"
+      - ".github/workflows/build.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -11,6 +18,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     container:
       image: archlinux:latest
@@ -49,7 +57,7 @@ jobs:
       # ---------------------------
       - name: Install base tools
         run: |
-          pacman -Sy --noconfirm base-devel git sudo pacman
+          pacman -Syu --noconfirm base-devel git sudo pacman
 
       # ---------------------------
       # Setup builder user
