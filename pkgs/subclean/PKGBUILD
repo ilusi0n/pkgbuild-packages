@@ -1,0 +1,23 @@
+_npmname=subclean
+_npmver=1.5.0
+pkgname=subclean
+pkgver=1.5.0
+pkgrel=1
+pkgdesc="A powerful CLI tool to remove advertising from subtitle files."
+arch=(any)
+url="https://github.com/DrKain/subclean"
+license=('MIT')
+depends=('nodejs')
+makedepends=('npm')
+optdepends=()
+source=(https://github.com/DrKain/$_npmname/archive/refs/tags/v$_npmver.tar.gz)
+noextract=($_npmname-$_npmver.gz)
+sha1sums=('SKIP')
+
+package() {
+    cd $srcdir
+    local _npmdir="$pkgdir/usr/lib/node_modules/"
+    mkdir -p $_npmdir
+    cd $_npmdir
+    npm install -g --prefix "$pkgdir/usr" $_npmname@$_npmver
+}
