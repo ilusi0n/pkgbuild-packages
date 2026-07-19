@@ -3,7 +3,7 @@
 # Contributor: Merrkry <merrkry@tsubasa.moe>
 
 pkgname=tsukimi
-pkgver=26.7.3
+pkgver=26.7.2
 pkgrel=1
 pkgdesc='A simple third-party GTK4 Emby/Jellyfin client'
 arch=('x86_64')
